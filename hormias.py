@@ -1,18 +1,23 @@
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+from time import time
+import pandas as pd
 
-class ACO_TSP:
-    def __init__(self, distancias, alpha=1, beta=2, rho=0.1, Q=1, n_hormigas=10):
+class ACO_TSP_Optimizado:
+    def __init__(self, distancias, ciudades, alpha=1, beta=3, rho=0.15, Q=100, n_hormigas=20):
         """
-        distancias: matriz de distancias entre ciudades
-        n_hormigas: número de hormigas
-        alpha: importancia de las feromonas
-        beta: importancia de la visibilidad (1/distancia)
-        rho: tasa de evaporación
-        Q: constante para depositar feromonas
+        Versión optimizada basada en el estudio de Puno
+        
+        Parámetros optimizados según el informe:
+        - alpha = 1 (importancia feromonas)
+        - beta = 3 (mayor peso a distancia)
+        - rho = 0.15 (evaporación moderada)
+        - Q = 100 (escala apropiada para distancias)
+        - n_hormigas = 20 (balance exploración-explotación)
         """
         self.distancias = distancias
+        self.ciudades = ciudades
         self.n = len(distancias)
         self.n_hormigas = n_hormigas
         self.alpha = alpha
@@ -20,106 +25,200 @@ class ACO_TSP:
         self.rho = rho
         self.Q = Q
         
-        # Inicializar feromonas
-        self.feromonas = np.ones((self.n, self.n))
+        # Inicialización mejorada de feromonas
+        self.feromonas = np.ones((self.n, self.n)) * (1 / self.n)
         
-        # Calcular visibilidad (inversa de la distancia)
-        self.visibilidad = 1 / (distancias + 1e-10)  # Evitar división por cero
+        # Visibilidad (inversa de la distancia con manejo de ceros)
+        self.visibilidad = 1 / (distancias + np.eye(self.n) * 1e-10)
         
-    def run(self, iteraciones):
-        mejor_ruta = None
-        mejor_distancia = float('inf')
-        historial_distancias = []
+        # Estadísticas
+        self.historial = {
+            'mejor_distancia': [],
+            'promedio_distancias': [],
+            'peor_distancia': [],
+            'tiempo_iteracion': []
+        }
+    
+    def run(self, iteraciones, verbose=True):
+        mejor_ruta_global = None
+        mejor_distancia_global = float('inf')
+        tiempo_inicio = time()
         
         for it in range(iteraciones):
-            rutas = self._construir_rutas()
-            self._actualizar_feromonas(rutas)
+            iter_inicio = time()
+            rutas, distancias = self._construir_rutas()
+            self._actualizar_feromonas(rutas, distancias)
             
-            # Encontrar la mejor ruta de esta iteración
-            for ruta, distancia in rutas:
-                if distancia < mejor_distancia:
-                    mejor_distancia = distancia
-                    mejor_ruta = ruta
+            # Estadísticas de la iteración
+            mejor_distancia = min(distancias)
+            peor_distancia = max(distancias)
+            promedio_distancia = np.mean(distancias)
             
-            historial_distancias.append(mejor_distancia)
+            # Actualizar mejor solución global
+            idx_mejor = np.argmin(distancias)
+            if mejor_distancia < mejor_distancia_global:
+                mejor_distancia_global = mejor_distancia
+                mejor_ruta_global = rutas[idx_mejor]
             
-            if (it + 1) % 10 == 0:
-                print(f"Iteración {it+1}: Mejor distancia = {mejor_distancia:.2f} km")
+            # Registrar estadísticas
+            self.historial['mejor_distancia'].append(mejor_distancia)
+            self.historial['promedio_distancias'].append(promedio_distancia)
+            self.historial['peor_distancia'].append(peor_distancia)
+            self.historial['tiempo_iteracion'].append(time() - iter_inicio)
+            
+            if verbose and (it + 1) % 10 == 0:
+                print(f"Iteración {it+1:3d}: Mejor = {mejor_distancia:7.2f} km | "
+                      f"Promedio = {promedio_distancia:7.2f} km | "
+                      f"Peor = {peor_distancia:7.2f} km | "
+                      f"Tiempo = {self.historial['tiempo_iteracion'][-1]:.3f}s")
         
-        return mejor_ruta, mejor_distancia, historial_distancias
+        tiempo_total = time() - tiempo_inicio
+        if verbose:
+            print("\n" + "="*70)
+            print(f"Optimización completada en {iteraciones} iteraciones")
+            print(f"Tiempo total: {tiempo_total:.2f} segundos")
+            print(f"Tiempo promedio por iteración: {np.mean(self.historial['tiempo_iteracion']):.3f} segundos")
+            print("="*70)
+        
+        return mejor_ruta_global, mejor_distancia_global
     
     def _construir_rutas(self):
         rutas = []
+        distancias = []
+        
         for _ in range(self.n_hormigas):
             ruta, distancia = self._construir_ruta()
-            rutas.append((ruta, distancia))
-        return rutas
+            rutas.append(ruta)
+            distancias.append(distancia)
+        
+        return rutas, distancias
     
     def _construir_ruta(self):
         ruta = []
         distancia_total = 0
         
-        # Empezar en una ciudad aleatoria
-        ciudad_actual = random.randint(0, self.n-1)
+        # Estrategia de inicio: 50% aleatorio, 50% ciudad más conectada
+        if random.random() < 0.5:
+            ciudad_actual = random.randint(0, self.n-1)
+        else:
+            ciudad_actual = np.argmax(np.sum(1/(self.distancias + np.eye(self.n)*1e-10), axis=1))
+        
         ruta.append(ciudad_actual)
         ciudades_visitadas = set([ciudad_actual])
         
-        # Visitar todas las ciudades
         while len(ciudades_visitadas) < self.n:
-            # Calcular probabilidades para la siguiente ciudad
-            probabilidades = []
+            # Calcular probabilidades con normalización numéricamente estable
+            probabilidades = np.zeros(self.n)
+            
             for ciudad in range(self.n):
                 if ciudad not in ciudades_visitadas:
-                    feromona = self.feromonas[ciudad_actual][ciudad] ** self.alpha
-                    visibilidad = self.visibilidad[ciudad_actual][ciudad] ** self.beta
-                    probabilidades.append((ciudad, feromona * visibilidad))
-                else:
-                    probabilidades.append((ciudad, 0))
+                    tau = self.feromonas[ciudad_actual][ciudad] ** self.alpha
+                    eta = self.visibilidad[ciudad_actual][ciudad] ** self.beta
+                    probabilidades[ciudad] = tau * eta
             
-            # Normalizar probabilidades
-            total = sum(p for c, p in probabilidades)
-            if total == 0:
-                # Si todas las probabilidades son 0, elegir aleatoriamente
-                ciudad_siguiente = random.choice([c for c in range(self.n) if c not in ciudades_visitadas])
+            # Manejo de casos donde todas las probabilidades son cero
+            if np.sum(probabilidades) == 0:
+                # Seleccionar la ciudad no visitada más cercana
+                distancias_no_visitadas = np.copy(self.distancias[ciudad_actual])
+                distancias_no_visitadas[list(ciudades_visitadas)] = np.inf
+                ciudad_siguiente = np.argmin(distancias_no_visitadas)
             else:
-                probabilidades = [(c, p/total) for c, p in probabilidades]
-                ciudades, probs = zip(*probabilidades)
-                ciudad_siguiente = random.choices(ciudades, weights=probs)[0]
+                probabilidades /= np.sum(probabilidades)
+                ciudad_siguiente = np.random.choice(range(self.n), p=probabilidades)
             
-            # Mover a la siguiente ciudad
+            # Actualizar ruta
             distancia_total += self.distancias[ciudad_actual][ciudad_siguiente]
             ruta.append(ciudad_siguiente)
             ciudades_visitadas.add(ciudad_siguiente)
             ciudad_actual = ciudad_siguiente
         
-        # Volver a la ciudad inicial para completar el ciclo
+        # Completar el ciclo
         distancia_total += self.distancias[ruta[-1]][ruta[0]]
         ruta.append(ruta[0])
         
         return ruta, distancia_total
     
-    def _actualizar_feromonas(self, rutas):
+    def _actualizar_feromonas(self, rutas, distancias):
         # Evaporación
         self.feromonas *= (1 - self.rho)
         
-        # Depositar feromonas
-        for ruta, distancia in rutas:
-            contribucion = self.Q / distancia
+        # Deposición elitista: solo las mejores hormigas contribuyen
+        mejores_hormigas = np.argsort(distancias)[:max(1, int(self.n_hormigas * 0.2))]  # Top 20%
+        
+        for idx in mejores_hormigas:
+            contribucion = self.Q / distancias[idx]
+            ruta = rutas[idx]
+            
             for i in range(len(ruta)-1):
                 ciudad_actual = ruta[i]
                 ciudad_siguiente = ruta[i+1]
                 self.feromonas[ciudad_actual][ciudad_siguiente] += contribucion
                 self.feromonas[ciudad_siguiente][ciudad_actual] += contribucion  # Matriz simétrica
+    
+    def generar_reporte(self, mejor_ruta, mejor_distancia):
+        print("\n" + "="*70)
+        print("REPORTE DE OPTIMIZACIÓN - REGIÓN PUNO")
+        print("="*70)
+        
+        # Detalle de la mejor ruta
+        print("\nMEJOR RUTA ENCONTRADA:")
+        ruta_nombres = [self.ciudades[i] for i in mejor_ruta]
+        print(" → ".join(ruta_nombres))
+        print(f"\nDistancia total: {mejor_distancia:.2f} km")
+        
+        # Detalle por tramos
+        print("\nDETALLE POR TRAMOS:")
+        distancia_acumulada = 0
+        for i in range(len(mejor_ruta)-1):
+            origen = mejor_ruta[i]
+            destino = mejor_ruta[i+1]
+            distancia = self.distancias[origen][destino]
+            distancia_acumulada += distancia
+            print(f"{self.ciudades[origen]:<12} → {self.ciudades[destino]:<12}: "
+                  f"{distancia:5.1f} km  (Acumulado: {distancia_acumulada:6.1f} km)")
+        
+        # Estadísticas de convergencia
+        print("\nESTADÍSTICAS DE CONVERGENCIA:")
+        print(f"- Mejor distancia inicial: {self.historial['mejor_distancia'][0]:.2f} km")
+        print(f"- Mejor distancia final:   {mejor_distancia:.2f} km")
+        mejora = (self.historial['mejor_distancia'][0] - mejor_distancia) / self.historial['mejor_distancia'][0] * 100
+        print(f"- Porcentaje de mejora:    {mejora:.2f}%")
+        print(f"- Iteración de convergencia: {np.argmin(self.historial['mejor_distancia']) + 1}")
+        
+        # Gráficos
+        self._generar_graficos()
+    
+    def _generar_graficos(self):
+        plt.figure(figsize=(15, 5))
+        
+        # Gráfico de convergencia
+        plt.subplot(1, 2, 1)
+        plt.plot(self.historial['mejor_distancia'], 'b-', label='Mejor')
+        plt.plot(self.historial['promedio_distancias'], 'g--', label='Promedio')
+        plt.plot(self.historial['peor_distancia'], 'r:', label='Peor')
+        plt.title("Convergencia del Algoritmo ACO\nRegión de Puno, Perú")
+        plt.xlabel("Iteración")
+        plt.ylabel("Distancia (km)")
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        
+        # Gráfico de tiempo por iteración
+        plt.subplot(1, 2, 2)
+        plt.plot(self.historial['tiempo_iteracion'], 'm-')
+        plt.title("Tiempo de Ejecución por Iteración")
+        plt.xlabel("Iteración")
+        plt.ylabel("Tiempo (s)")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
 
-# Ejemplo de uso con ciudades del Perú - Región Puno y alrededores
-if __name__ == "__main__":
-    # Ciudades de la región de Puno y importantes ciudades cercanas del sur del Perú
+# Datos de la región de Puno según el informe
+def cargar_datos_puno():
     ciudades = ["Puno", "Juliaca", "Ilave", "Juli", "Lampa", "Ayaviri", "Desaguadero"]
     
-    # Matriz de distancias aproximadas en kilómetros entre estas ciudades
-    # Basadas en distancias reales por carretera
     distancias = np.array([
-        #   Puno  Jul   Ila   Jul   Lam   Aya   Des
+        # Puno, Juliaca, Ilave, Juli, Lampa, Ayaviri, Desaguadero
         [   0,   44,   54,   80,   82,  126,  148],  # Puno
         [  44,    0,   98,  124,   32,   84,  192],  # Juliaca
         [  54,   98,    0,   26,  136,  180,   94],  # Ilave
@@ -129,87 +228,39 @@ if __name__ == "__main__":
         [ 148,  192,   94,  120,  224,  276,    0]   # Desaguadero
     ])
     
-    print("=== ALGORITMO DE COLONIA DE HORMIGAS PARA TSP ===")
-    print("Ciudades de la región de Puno, Perú")
-    print("Ciudades incluidas:", ", ".join(ciudades))
-    print("\nMatriz de distancias (km):")
-    print("      ", end="")
-    for ciudad in ciudades:
-        print(f"{ciudad[:4]:>6}", end="")
-    print()
+    return ciudades, distancias
+
+if __name__ == "__main__":
+    # Cargar datos de Puno
+    ciudades, distancias = cargar_datos_puno()
+    
+    print("="*70)
+    print("ALGORITMO DE COLONIA DE HORMIGAS OPTIMIZADO")
+    print("PROBLEMA DEL VENDEDOR VIAJERO - REGIÓN PUNO, PERÚ")
+    print("="*70)
+    
+    print("\nCiudades incluidas en el estudio:")
     for i, ciudad in enumerate(ciudades):
-        print(f"{ciudad[:8]:<8}", end="")
-        for j in range(len(ciudades)):
-            print(f"{distancias[i][j]:>6.0f}", end="")
-        print()
+        print(f"{i+1}. {ciudad}")
     
-    print("\n" + "="*50)
-    print("EJECUTANDO ALGORITMO ACO...")
-    print("="*50)
+    # Crear y ejecutar el algoritmo optimizado
+    aco = ACO_TSP_Optimizado(distancias, ciudades)
     
-    # Crear y ejecutar el algoritmo con parámetros optimizados para este problema
-    aco = ACO_TSP(distancias, 
-                  n_hormigas=20,     # Más hormigas para mejor exploración
-                  alpha=1,           # Importancia de feromonas
-                  beta=3,            # Mayor importancia a la distancia
-                  rho=0.15,          # Tasa de evaporación moderada
-                  Q=100)             # Constante para depositar feromonas
+    print("\nIniciando optimización con parámetros:")
+    print(f"- Número de hormigas: {aco.n_hormigas}")
+    print(f"- Alpha (feromonas): {aco.alpha}")
+    print(f"- Beta (visibilidad): {aco.beta}")
+    print(f"- Rho (evaporación): {aco.rho}")
+    print(f"- Q (constante): {aco.Q}")
+    print(f"- Iteraciones: 100")
     
-    mejor_ruta, mejor_distancia, historial = aco.run(iteraciones=100)
+    mejor_ruta, mejor_distancia = aco.run(iteraciones=100)
     
-    # Mostrar resultados
-    print("\n" + "="*50)
-    print("RESULTADOS FINALES")
-    print("="*50)
-    print("\nMejor ruta encontrada:")
-    ruta_nombres = [ciudades[i] for i in mejor_ruta]
-    print(" → ".join(ruta_nombres))
-    print(f"\nDistancia total del recorrido: {mejor_distancia:.1f} km")
+    # Generar reporte completo
+    aco.generar_reporte(mejor_ruta, mejor_distancia)
     
-    # Mostrar distancias entre ciudades consecutivas en la mejor ruta
-    print("\nDetalle del recorrido:")
-    distancia_acumulada = 0
-    for i in range(len(mejor_ruta)-1):
-        ciudad_actual = mejor_ruta[i]
-        ciudad_siguiente = mejor_ruta[i+1]
-        distancia_tramo = distancias[ciudad_actual][ciudad_siguiente]
-        distancia_acumulada += distancia_tramo
-        print(f"{ciudades[ciudad_actual]} → {ciudades[ciudad_siguiente]}: {distancia_tramo} km (Acumulado: {distancia_acumulada:.1f} km)")
-    
-    # Gráfico de convergencia
-    plt.figure(figsize=(12, 5))
-    
-    # Gráfico de convergencia
-    plt.subplot(1, 2, 1)
-    plt.plot(historial, 'b-', linewidth=2)
-    plt.title("Convergencia del Algoritmo ACO\nCiudades de Puno, Perú")
-    plt.xlabel("Iteración")
-    plt.ylabel("Mejor distancia (km)")
-    plt.grid(True, alpha=0.3)
-    plt.ylim(bottom=0)
-    
-    # Gráfico de barras con distancias entre ciudades principales
-    plt.subplot(1, 2, 2)
-    algunas_distancias = [
-        ("Puno-Juliaca", distancias[0][1]),
-        ("Juliaca-Lampa", distancias[1][4]),
-        ("Puno-Juli", distancias[0][3]),
-        ("Ilave-Juli", distancias[2][3]),
-        ("Lampa-Ayaviri", distancias[4][5])
-    ]
-    nombres, vals = zip(*algunas_distancias)
-    plt.bar(range(len(nombres)), vals, color=['skyblue', 'lightcoral', 'lightgreen', 'gold', 'plum'])
-    plt.title("Distancias entre Ciudades Principales")
-    plt.ylabel("Distancia (km)")
-    plt.xticks(range(len(nombres)), nombres, rotation=45)
-    plt.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    # Estadísticas adicionales
-    print(f"\nEstadísticas del algoritmo:")
-    print(f"- Número de iteraciones: 100")
-    print(f"- Número de hormigas por iteración: 20")
-    print(f"- Mejora total: {historial[0]:.1f} → {historial[-1]:.1f} km ({((historial[0]-historial[-1])/historial[0]*100):.1f}% de mejora)")
-    print(f"- Distancia promedio entre ciudades: {np.mean(distancias[distancias > 0]):.1f} km")
+    # Mostrar matriz de feromonas final
+    print("\nMatriz de feromonas final (normalizada):")
+    feromonas_norm = aco.feromonas / np.max(aco.feromonas)
+    df_feromonas = pd.DataFrame(feromonas_norm, index=ciudades, columns=ciudades)
+    print(df_feromonas.style.format("{:.2f}").background_gradient(cmap='YlOrRd'))
